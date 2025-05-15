@@ -4,9 +4,9 @@ from dash.exceptions import PreventUpdate
 from models.forecast import Forecast
 from utils.data_loader import parse_csv_contents
 from utils.visuals import (
-    plot_forecast_results,
-    plot_validation_forecasts,
-    create_metrics_table
+    create_metrics_table,
+    plot_residuals,
+    plot_combined_forecasts
 )
 
 def register_callbacks(app):
@@ -33,6 +33,7 @@ def register_callbacks(app):
 
         ensemble_options = Forecast.get_ensemble_options(selected_models)
         return [{'label': opt, 'value': opt} for opt in ensemble_options]
+    
     @callback(
         Output('timeseries-plot', 'figure'),
         Input('upload-data', 'contents'),
@@ -50,38 +51,77 @@ def register_callbacks(app):
             x=df['date'],
             y=df['value'],
             mode='lines',
-            name='Passengers'
+            name='Time Series Data'
         ))
-        fig.update_layout(title="CPU Utilization Time Series", xaxis_title="Date", yaxis_title="Utilization")
+        fig.update_layout(
+            title="Time Series Data", 
+            xaxis_title="Date", 
+            yaxis_title="Value"
+        )
         return fig
 
 
     @callback(
         Output('forecast-metrics', 'children'),
         Output('forecast-graphs', 'children'),
+        Output('residual-plots', 'children'),
+        
         Input('forecast-button', 'n_clicks'),
+        
         State('model-select', 'value'),
         State('forecast-horizon', 'value'),
         State('ensemble-option', 'value'),
         State('upload-data', 'contents'),
+        State('crossval-checklist', 'value'),
+        State('window-type-radio', 'value'),
         prevent_initial_call=True
     )
-    def run_forecast(n_clicks, models, horizon, ensemble_opt, contents):
+    def run_forecast(n_clicks, models, horizon, ensemble_opt, contents, cv_checklist, window_type):
         if n_clicks is None or contents is None or not models:
             raise PreventUpdate
 
+        # Parse the uploaded data
         df = parse_csv_contents(contents)
+        
+        # Set flags based on UI selections
         ensemble_flag = 'ensemble' in ensemble_opt if ensemble_opt else False
+        cross_validate = 'cv_on' in cv_checklist
+        
+        # Display what we're doing
+        print(f"\nRunning forecast with:")
+        print(f"Models: {models}")
+        print(f"Horizon: {horizon} days")
+        print(f"Ensemble: {ensemble_flag}")
+        print(f"Cross-validate: {cross_validate}")
+        print(f"Window type: {window_type}")
 
+        # Create forecast object and run the forecast
         forecast_obj = Forecast(models=models, ensemble=ensemble_flag)
-        results = forecast_obj.fit_and_forecast(df, n_days=int(horizon))
+        results = forecast_obj.fit_and_forecast(
+            df, 
+            n_days=int(horizon),
+            cross_validate=cross_validate,
+            window_type=window_type,
+            #stride=max(1, int(horizon/3))  # Use dynamic stride based on horizon
+            stride = 1
+        )
 
+        # Create the metrics table
         metrics_table = create_metrics_table(results['metrics'])
 
-        # Validation forecast plots
-        val_plots = plot_validation_forecasts(results['val_forecasts'], results['val_truth'])
+        # Create the forecast plots
+        combined_plots = plot_combined_forecasts(
+            results['val_truth'],
+            results['val_forecasts'],
+            results['forecasts']
+        )
 
-        # Future forecast plots
-        forecast_plots = plot_forecast_results(results['forecasts'], results['truth'])
+        # Create residual plots
+        residual_plots = []
+        
+        for model_name, forecast_ts in results['val_forecasts']:
+            if forecast_ts is not None and len(forecast_ts) > 0:
+                residual_plot = plot_residuals(results['val_truth'], forecast_ts, model_name)
+                residual_plots.append(residual_plot)
 
-        return metrics_table, val_plots + forecast_plots
+        return metrics_table, combined_plots, residual_plots
