@@ -141,3 +141,56 @@ def get_balance(n):
 
 if __name__ == "__main__":
     app.run_server(debug=True)
+
+from darts import TimeSeries
+from darts.models import NBEATSModel
+from darts.dataprocessing.transformers import Scaler
+from darts.utils.timeseries_generation import combine_series
+from darts.metrics import rmse
+
+import pandas as pd
+import numpy as np
+
+# === 1. Load and Pivot Data ===
+df = pd.read_csv("your_data.csv", parse_dates=["Date"])
+series_list = []
+
+for host in df["host_name"].unique():
+    df_host = df[df["host_name"] == host][["Date", "utilization"]].sort_values("Date")
+    ts = TimeSeries.from_dataframe(df_host, "Date", "utilization")
+    series_list.append(ts)
+
+# === 2. Scaling (optional but recommended) ===
+scaler = Scaler()
+series_scaled = scaler.fit_transform(series_list)
+
+# === 3. Train/Val Split ===
+train_series = [s[:-30] for s in series_scaled]
+val_series = [s[-30:] for s in series_scaled]
+
+# === 4. Train Global N-BEATS Model ===
+model = NBEATSModel(
+    input_chunk_length=30,
+    output_chunk_length=30,
+    n_epochs=100,
+    random_state=42,
+    model_name="nbeats_model",
+    force_reset=True,
+)
+
+model.fit(train_series, verbose=True)
+
+# === 5. Forecast on Each Series ===
+forecasts = [model.predict(n=30, series=s) for s in train_series]
+
+# === 6. Inverse Scale ===
+forecasts = scaler.inverse_transform(forecasts)
+val_series = scaler.inverse_transform(val_series)
+
+# === 7. (Optional) Average Forecast Across Hosts ===
+avg_forecast = sum(forecasts) * (1 / len(forecasts))
+avg_actual = sum(val_series) * (1 / len(val_series))
+
+# === 8. Plot ===
+avg_forecast.plot(label="Average Forecast")
+avg_actual.plot(label="Average Actual")
